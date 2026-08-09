@@ -12,7 +12,6 @@ This repository contains the Backend Decision Support System and Machine Learnin
 
 ---
 
-
 ## 🧪 API Endpoints
 
 ### 1. 3-Point Spatial Triangulated Sampling Prediction (Recommended for Research)
