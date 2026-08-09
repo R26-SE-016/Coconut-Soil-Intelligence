@@ -1,0 +1,111 @@
+{
+    "best_model": "Random Forest (Ensemble)",
+    "best_average_r2": -0.0963,
+    "all_models_comparison": {
+        "Random Forest (Ensemble)": {
+            "R2_Score": {
+                "Nitrogen (N)": -0.0513,
+                "Phosphorus (P)": -0.1147,
+                "Potassium (K)": -0.1229,
+                "Average_R2": -0.0963
+            },
+            "RMSE": {
+                "Nitrogen (N)": 0.5252,
+                "Phosphorus (P)": 0.2726,
+                "Potassium (K)": 0.0988,
+                "Average_RMSE": 0.2989
+            },
+            "MAE": {
+                "Nitrogen (N)": 0.4329,
+                "Phosphorus (P)": 0.2303,
+                "Potassium (K)": 0.0448,
+                "Average_MAE": 0.236
+            }
+        },
+        "Extra Trees Regressor": {
+            "R2_Score": {
+                "Nitrogen (N)": -0.0388,
+                "Phosphorus (P)": -0.1965,
+                "Potassium (K)": -0.118,
+                "Average_R2": -0.1177
+            },
+            "RMSE": {
+                "Nitrogen (N)": 0.5221,
+                "Phosphorus (P)": 0.2824,
+                "Potassium (K)": 0.0986,
+                "Average_RMSE": 0.301
+            },
+            "MAE": {
+                "Nitrogen (N)": 0.4415,
+                "Phosphorus (P)": 0.2406,
+                "Potassium (K)": 0.0463,
+                "Average_MAE": 0.2428
+            }
+        },
+        "Gradient Boosting (HistGB)": {
+            "R2_Score": {
+                "Nitrogen (N)": -0.15,
+                "Phosphorus (P)": -0.1201,
+                "Potassium (K)": -0.1684,
+                "Average_R2": -0.1462
+            },
+            "RMSE": {
+                "Nitrogen (N)": 0.5493,
+                "Phosphorus (P)": 0.2732,
+                "Potassium (K)": 0.1008,
+                "Average_RMSE": 0.3078
+            },
+            "MAE": {
+                "Nitrogen (N)": 0.444,
+                "Phosphorus (P)": 0.2175,
+                "Potassium (K)": 0.0504,
+                "Average_MAE": 0.2373
+            }
+        },
+        "Polynomial Ridge Regression": {
+            "R2_Score": {
+                "Nitrogen (N)": -0.4169,
+                "Phosphorus (P)": -0.0593,
+                "Potassium (K)": -0.0893,
+                "Average_R2": -0.1885
+            },
+            "RMSE": {
+                "Nitrogen (N)": 0.6098,
+                "Phosphorus (P)": 0.2657,
+                "Potassium (K)": 0.0973,
+                "Average_RMSE": 0.3243
+            },
+            "MAE": {
+                "Nitrogen (N)": 0.4802,
+                "Phosphorus (P)": 0.2181,
+                "Potassium (K)": 0.0444,
+                "Average_MAE": 0.2476
+            }
+        },
+        "K-Nearest Neighbors (KNN)": {
+            "R2_Score": {
+                "Nitrogen (N)": -0.3139,
+                "Phosphorus (P)": -0.1408,
+                "Potassium (K)": -0.1272,
+                "Average_R2": -0.194
+            },
+            "RMSE": {
+                "Nitrogen (N)": 0.5872,
+                "Phosphorus (P)": 0.2757,
+                "Potassium (K)": 0.099,
+                "Average_RMSE": 0.3206
+            },
+            "MAE": {
+                "Nitrogen (N)": 0.4989,
+                "Phosphorus (P)": 0.2054,
+                "Potassium (K)": 0.0472,
+                "Average_MAE": 0.2505
+            }
+        }
+    },
+    "dataset_info": {
+        "total_samples": 118,
+        "train_samples": 94,
+        "test_samples": 24
+    }
+}
