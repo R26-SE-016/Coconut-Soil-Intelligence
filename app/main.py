@@ -317,7 +317,7 @@ def complete_analysis(data: AnalysisCompleteRequest):
         raise HTTPException(status_code=500, detail="Firebase not configured")
         
     if not data.analysis_id or not data.analysis_id.strip():
-        raise HTTPException(status_code=400, detail="analysis_id cannot be empty")
+        raise HTTPException(status_code=400, detail=f"analysis_id cannot be empty. Received: '{data.analysis_id}'")
         
     doc_ref = db.collection("trees").document(data.tree_no).collection("analyses").document(data.analysis_id)
     doc = doc_ref.get()
@@ -329,7 +329,8 @@ def complete_analysis(data: AnalysisCompleteRequest):
     readings = doc_data.get("readings", {})
     
     if "point1" not in readings or "point2" not in readings or "point3" not in readings:
-        raise HTTPException(status_code=400, detail="Cannot complete analysis. Exact 3 valid readings (point1, point2, point3) are required.")
+        keys_found = list(readings.keys())
+        raise HTTPException(status_code=400, detail=f"Cannot complete analysis. Exact 3 valid readings required. Found: {keys_found}")
         
     # Calculate averages
     avg_n = sum(r["N"] for r in readings.values()) / 3.0
