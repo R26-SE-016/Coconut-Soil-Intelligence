@@ -11,8 +11,7 @@ def run_simulation():
     # 1. Start Analysis Session
     print("\n[1] Starting new analysis session...")
     start_resp = requests.post(f"{BASE_URL}/start", json={
-        "tree_no": TREE_ID,
-        "zone_id": "Zone A"
+        "tree_no": TREE_ID
     })
     
     if start_resp.status_code != 200:
