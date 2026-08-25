@@ -1,24 +1,30 @@
 import os
 import json
-import joblib
-from fastapi import FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
+import joblib #Machine Learning models save/load
+from fastapi import FastAPI, HTTPException, status, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware #Frontend → Backend request allow
 from typing import Dict, Any
 
 from app.schemas import (
-    SinglePointSoilInput,
     TriangulatedSoilInput,
     PredictionResponse,
     AnalysisStartRequest,
     AnalysisStartResponse,
     PointReadingInput,
-    AnalysisCompleteRequest
+    AnalysisCompleteRequest,
+    ImagePredictionResponse,
+    LocationRequest,
+    LocationResponse
 )
 from ml.cri_recommender import calculate_cri_fertilizer
 from ml.train_models import train_and_evaluate_models
+from ml.nutrient_predictor import predict_image
+from ml.image_recommender import get_image_based_recommendation
 import firebase_admin
 from firebase_admin import credentials, firestore
 import uuid
+import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 
 app = FastAPI(
@@ -64,7 +70,7 @@ def load_active_model():
             active_model_pipeline = joblib.load(model_path)
             if os.path.exists(report_path):
                 with open(report_path, "r", encoding="utf-8") as f:
-                    rep = json.load(f)
+                    rep = json.load(f)  #model comparison report read
                     active_model_name = rep.get("best_model", "Trained ML Model")
             else:
                 active_model_name = "Trained ML Model"
@@ -87,7 +93,6 @@ def read_root():
         "active_model": active_model_name,
         "endpoints": {
             "triangulated_prediction": "POST /api/v1/predict/triangulated",
-            "single_point_prediction": "POST /api/v1/predict/single",
             "train_models": "POST /api/v1/models/train",
             "model_status": "GET /api/v1/models/status"
         }
@@ -181,7 +186,7 @@ def trigger_model_training():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
 
-def execute_prediction_pipeline(tree_no: int, zone_id: str, sampling_method: str, avg_n: float, avg_p: float, avg_k: float, soil_ph: float = 6.5) -> PredictionResponse:
+def execute_prediction_pipeline(tree_no: int, sampling_method: str, avg_n: float, avg_p: float, avg_k: float, soil_ph: float = 6.5) -> PredictionResponse:
     global active_model_pipeline, active_model_name
     if active_model_pipeline is None:
         load_active_model()
@@ -202,7 +207,6 @@ def execute_prediction_pipeline(tree_no: int, zone_id: str, sampling_method: str
 
     return PredictionResponse(
         tree_no=tree_no,
-        zone_id=zone_id,
         sampling_method=sampling_method,
         average_soil_npk={"N": round(avg_n, 4), "P": round(avg_p, 4), "K": round(avg_k, 4)},
         predicted_14th_leaf_npk={"N": leaf_n, "P": leaf_p, "K": leaf_k},
@@ -228,7 +232,6 @@ def predict_triangulated(data: TriangulatedSoilInput):
 
     return execute_prediction_pipeline(
         tree_no=data.tree_no,
-        zone_id=data.zone_id or "Standard Zone",
         sampling_method="3-Point Spatial Triangulated Sampling (Manure Circle Composite)",
         avg_n=avg_n,
         avg_p=avg_p,
@@ -236,21 +239,7 @@ def predict_triangulated(data: TriangulatedSoilInput):
         soil_ph=soil_ph
     )
 
-@app.post("/api/v1/predict/single", response_model=PredictionResponse)
-def predict_single(data: SinglePointSoilInput):
-    """
-    Single-point sensor reading prediction.
-    """
-    soil_ph = data.reading.pH if data.reading.pH is not None else 6.5
-    return execute_prediction_pipeline(
-        tree_no=data.tree_no,
-        zone_id=data.zone_id or "Standard Zone",
-        sampling_method="Single-Point Sensor Reading",
-        avg_n=data.reading.N,
-        avg_p=data.reading.P,
-        avg_k=data.reading.K,
-        soil_ph=soil_ph
-    )
+
 
 # ---------------------------------------------------------
 # IoT Firebase Integration Endpoints
@@ -267,7 +256,6 @@ def start_analysis(data: AnalysisStartRequest):
     doc_ref.set({
         "status": "in_progress",
         "createdAt": datetime.now(timezone.utc).isoformat(),
-        "zone_id": data.zone_id,
         "readings": {}
     })
     
@@ -352,7 +340,6 @@ def complete_analysis(data: AnalysisCompleteRequest):
             
         prediction_res = execute_prediction_pipeline(
             tree_no=numeric_tree_no,
-            zone_id=doc_data.get("zone_id", "Zone A"),
             sampling_method="3-Point Spatial Triangulated IoT Sampling",
             avg_n=avg_n,
             avg_p=avg_p,
@@ -395,3 +382,132 @@ def complete_analysis(data: AnalysisCompleteRequest):
     
     # Return everything to the caller
     return updates
+
+@app.post("/api/v1/nutrient-analysis/predict", response_model=ImagePredictionResponse)
+async def predict_nutrient_from_image(image: UploadFile = File(...)):
+    """
+    Analyzes an uploaded coconut leaf image to predict potential nutrient deficiencies
+    (Nitrogen, Boron) based on visual features. This provides a preliminary visual assessment.
+    """
+    if not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
+        
+    try:
+        contents = await image.read()
+        result = predict_image(contents)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
+        
+    status = result["status"]
+    
+    # If validation failed (invalid_input or uncertain)
+    if status != "success":
+        return {
+            "success": True,
+            "status": status,
+            "message": result["message"],
+            "prediction": None,
+            "recommendation": None,
+            "visual_features": result.get("features", {})
+        }
+        
+    predicted_class = result["prediction"]
+    confidence = result["confidence"]
+    visual_features = result["features"]
+    
+    # Get image-specific recommendation
+    # We use a threshold of 0.60 as specified
+    rec_result = get_image_based_recommendation(
+        predicted_nutrient=predicted_class,
+        confidence=confidence,
+        threshold=0.60
+    )
+    
+    # Merge the visual features into the response for transparency
+    rec_result["visual_features"] = visual_features
+    
+    return rec_result
+
+@app.post("/api/v1/location/agro-zone", response_model=LocationResponse)
+def get_agro_climatic_zone(req: LocationRequest):
+    lat = req.latitude
+    lon = req.longitude
+    
+    # 1. Validate coordinates bounds
+    if not (-90 <= lat <= 90):
+        return LocationResponse(success=False, message=f"Invalid latitude: {lat}")
+    if not (-180 <= lon <= 180):
+        return LocationResponse(success=False, message=f"Invalid longitude: {lon}")
+        
+    # 2. Query NSDI GIS Service
+    url = "https://gisapps.nsdi.gov.lk/server/rest/services/Srilanka/All_Layers/MapServer/111/query"
+    params = {
+        "geometryType": "esriGeometryPoint",
+        "geometry": f"{lon},{lat}",
+        "inSR": "4326",
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": "zone,climatic_zone,agro_eco_zone,agro_eco_r",
+        "returnGeometry": "false",
+        "f": "json"
+    }
+    
+    query_string = urllib.parse.urlencode(params)
+    full_url = f"{url}?{query_string}"
+    
+    try:
+        req_obj = urllib.request.Request(full_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req_obj, timeout=10.0) as response:
+            data = json.loads(response.read().decode('utf-8'))
+    except Exception as e:
+        return LocationResponse(success=False, message=f"NSDI Service Failure: {str(e)}")
+        
+    # 3. Handle response format errors
+    if "error" in data:
+        return LocationResponse(success=False, message=f"NSDI API Error: {data['error'].get('message', 'Unknown Error')}", raw_attributes=data)
+        
+    features = data.get("features", [])
+    if not features:
+        return LocationResponse(
+            success=True, 
+            zone=None, 
+            agro_ecological_zone=None, 
+            message="No agro-ecological zone found for these coordinates. (Might be ocean or outside boundary).",
+            raw_attributes=None
+        )
+        
+    # 4. Normalize based on priority (climatic_zone -> agro_eco_zone prefix)
+    attrs = features[0].get("attributes", {})
+    climatic_zone = attrs.get("climatic_zone", "")
+    agro_eco_zone = attrs.get("agro_eco_zone", "")
+    
+    major_zone = None
+    
+    if climatic_zone:
+        cz_upper = str(climatic_zone).strip().upper()
+        if "WET" in cz_upper:
+            major_zone = "Wet"
+        elif "INTERMEDIATE" in cz_upper:
+            major_zone = "Intermediate"
+        elif "DRY" in cz_upper:
+            major_zone = "Dry"
+            
+    # Fallback to prefix if climatic_zone doesn't contain expected keywords
+    if not major_zone and agro_eco_zone:
+        a_upper = str(agro_eco_zone).strip().upper()
+        if a_upper.startswith("W"):
+            major_zone = "Wet"
+        elif a_upper.startswith("I"):
+            major_zone = "Intermediate"
+        elif a_upper.startswith("D"):
+            major_zone = "Dry"
+            
+    return LocationResponse(
+        success=True,
+        zone=major_zone,
+        agro_ecological_zone=agro_eco_zone,
+        message="Zone successfully detected." if major_zone else "Zone detected but major zone format is unrecognized.",
+        raw_attributes=attrs
+    )
+

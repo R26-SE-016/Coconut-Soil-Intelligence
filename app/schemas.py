@@ -10,21 +10,14 @@ class SoilReading(BaseModel):
     temperature: Optional[float] = Field(28.5, description="Soil temperature in Celsius", example=28.5)
     EC: Optional[float] = Field(1.2, description="Electrical Conductivity in mS/cm", example=1.2)
 
-class SinglePointSoilInput(BaseModel):
-    tree_no: int = Field(..., description="Tree ID or sample number", example=30)
-    zone_id: Optional[str] = Field("Zone A", description="Plantation zone name", example="Zone A (Hilltop)")
-    reading: SoilReading
-
 class TriangulatedSoilInput(BaseModel):
     tree_no: int = Field(..., description="Tree ID or sample number", example=30)
-    zone_id: Optional[str] = Field("Zone A", description="Plantation zone name", example="Zone A (Hilltop)")
     point_a: SoilReading
     point_b: SoilReading
     point_c: SoilReading
 
 class PredictionResponse(BaseModel):
     tree_no: int
-    zone_id: str
     sampling_method: str
     average_soil_npk: Dict[str, float]
     predicted_14th_leaf_npk: Dict[str, float]
@@ -36,7 +29,6 @@ class PredictionResponse(BaseModel):
 
 class AnalysisStartRequest(BaseModel):
     tree_no: str = Field(..., description="Tree ID as string", example="MK-101")
-    zone_id: Optional[str] = Field("Zone A", description="Plantation zone name", example="Zone A (Hilltop)")
 
 class AnalysisStartResponse(BaseModel):
     analysis_id: str
@@ -53,3 +45,32 @@ class PointReadingInput(BaseModel):
 class AnalysisCompleteRequest(BaseModel):
     analysis_id: str = Field(..., description="The unique session ID for the analysis", example="AN-MK101-20260805-001")
     tree_no: str = Field(..., description="Tree ID", example="MK-101")
+
+class ImagePredictionDetails(BaseModel):
+    nutrient: str
+    class_name: str = Field(..., alias="class")
+    confidence: float
+
+class ImageRecommendationAdvice(BaseModel):
+    source: str
+    assessment_type: str
+    advice: str
+
+class ImagePredictionResponse(BaseModel):
+    success: bool
+    status: str
+    message: Optional[str] = None
+    prediction: Optional[ImagePredictionDetails] = None
+    recommendation: Optional[ImageRecommendationAdvice] = None
+    visual_features: Optional[Dict[str, float]] = None
+
+class LocationRequest(BaseModel):
+    latitude: float = Field(..., description="Latitude of the location", example=7.29)
+    longitude: float = Field(..., description="Longitude of the location", example=80.63)
+
+class LocationResponse(BaseModel):
+    success: bool
+    zone: Optional[str] = Field(None, description="Normalized major zone (Wet, Intermediate, Dry)", example="Intermediate")
+    agro_ecological_zone: Optional[str] = Field(None, description="Detailed agro-ecological zone from GIS", example="WM3b")
+    message: Optional[str] = None
+    raw_attributes: Optional[Dict[str, Any]] = Field(None, description="Raw attributes returned from NSDI GIS API")
