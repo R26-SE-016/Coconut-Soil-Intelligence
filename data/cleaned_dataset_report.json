@@ -1,0 +1,14 @@
+{
+    "total_images": 1104,
+    "counts_per_split": {
+        "train": 773,
+        "valid": 166,
+        "test": 165
+    },
+    "counts_per_class": {
+        "Nitrogen": 503,
+        "Boron": 459,
+        "Healthy": 142
+    },
+    "duplicates_removed": []
+}
