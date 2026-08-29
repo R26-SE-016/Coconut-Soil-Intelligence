@@ -98,6 +98,16 @@ def read_root():
         }
     }
 
+@app.get("/health")
+@app.get("/api/v1/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "service": "Coconut Soil Intelligence",
+        "active_model": active_model_name,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
 @app.get("/api/v1/models/status")
 def get_model_status():
     if not os.path.exists(report_path):
