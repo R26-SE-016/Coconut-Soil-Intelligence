@@ -1,4 +1,9 @@
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
+
 import json
 import joblib #Machine Learning models save/load
 from fastapi import FastAPI, HTTPException, status, UploadFile, File
