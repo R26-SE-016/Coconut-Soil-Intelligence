@@ -1,5 +1,8 @@
 import numpy as np
 from typing import Tuple
+import os
+import requests
+import cv2
 
 # =====================================================================
 # CONFIGURATION CONSTANTS
@@ -61,7 +64,84 @@ def validate_basic_leaf_input(image: np.ndarray, leaf_mask: np.ndarray, feats: d
     if color_density < MIN_COLOR_DENSITY:
         return ValidationResult(False, "invalid_input", "Please upload a clear image of a coconut leaf. (Unrelated colors)")
         
+    # 5. Plant Vegetation / Out-of-Distribution (OOD) Safety Check
+    # We analyze the RGB color relation within the detected leaf area.
+    # Coconut leaves (even deficient ones) have a minimum green presence and plant color signature.
+    # Skin tones, wood, and concrete typically have strongly negative ExG (< -10) and R significantly greater than G.
+    mean_r = feats.get('mean_r', 0)
+    mean_g = feats.get('mean_g', 0)
+    mean_b = feats.get('mean_b', 0)
+    
+    # Excess Green Index (ExG)
+    exg = 2 * mean_g - mean_r - mean_b
+    
+    if exg < -20.0:
+        return ValidationResult(
+            False, 
+            "invalid_input", 
+            "The uploaded image does not appear to be a valid coconut leaf. Please capture a clear photo of a coconut leaf."
+        )
+        
+    # 6. Optional PlantNet API Verification (if API key is configured in env)
+    # This precisely identifies whether the leaf is a coconut leaf (Cocos nucifera) or another plant species.
+    is_coconut, err_msg = verify_coconut_leaf_via_plantnet(image)
+    if not is_coconut:
+        return ValidationResult(False, "invalid_input", err_msg)
+        
     return ValidationResult(True, "success")
+
+
+def verify_coconut_leaf_via_plantnet(image: np.ndarray) -> Tuple[bool, str]:
+    api_key = os.getenv("PLANTNET_API_KEY")
+    if not api_key:
+        return True, ""
+        
+    url = f"https://my-api.plantnet.org/v2/identify/all?api-key={api_key}"
+    
+    try:
+        # Encode image to JPEG
+        _, buffer = cv2.imencode('.jpg', image)
+        image_bytes = buffer.tobytes()
+        
+        files = {
+            'images': ('image.jpg', image_bytes, 'image/jpeg')
+        }
+        data = {
+            'organs': ['leaf']
+        }
+        
+        response = requests.post(url, files=files, data=data, timeout=8.0)
+        
+        if response.status_code == 200:
+            res_json = response.json()
+            results = res_json.get('results', [])
+            
+            if results:
+                top_match = results[0]
+                species = top_match.get('species', {})
+                scientific_name = species.get('scientificNameWithoutAuthor', '')
+                common_names = species.get('commonNames', [])
+                score = top_match.get('score', 0.0)
+                
+                if score > 0.25:
+                    genus_info = species.get('genus', {})
+                    genus_name = genus_info.get('scientificNameWithoutAuthor', '') if isinstance(genus_info, dict) else str(genus_info)
+                    
+                    family_info = species.get('family', {})
+                    family_name = family_info.get('scientificNameWithoutAuthor', '') if isinstance(family_info, dict) else str(family_info)
+                    
+                    is_palm = "Arecaceae" in family_name
+                    is_coconut = "Cocos nucifera" in scientific_name or "Cocos" in genus_name or is_palm
+                    
+                    if is_coconut:
+                        return True, ""
+                    
+                    plant_name = common_names[0] if common_names else scientific_name
+                    return False, f"Detected plant: {plant_name}. This system only analyzes coconut leaves. Please upload a clear coconut leaf image."
+        return True, ""
+    except Exception as e:
+        print(f"[WARN] PlantNet API verification failed: {e}")
+        return True, ""
 
 
 def apply_post_prediction_safety_rule(feats: dict, predicted_class: str, model_confidence: float) -> ValidationResult:

@@ -1,4 +1,9 @@
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
+
 import json
 import joblib #Machine Learning models save/load
 from fastapi import FastAPI, HTTPException, status, UploadFile, File
@@ -96,6 +101,16 @@ def read_root():
             "train_models": "POST /api/v1/models/train",
             "model_status": "GET /api/v1/models/status"
         }
+    }
+
+@app.get("/health")
+@app.get("/api/v1/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "service": "Coconut Soil Intelligence",
+        "active_model": active_model_name,
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/api/v1/models/status")

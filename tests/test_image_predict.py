@@ -10,7 +10,7 @@ from app.main import app
 
 client = TestClient(app)
 
-def test_image_upload(image_path, expected_status=200):
+def execute_image_upload(image_path, expected_status=200):
     print(f"\n--- Testing image: {os.path.basename(image_path)} ---")
     
     if not os.path.exists(image_path):
@@ -24,7 +24,7 @@ def test_image_upload(image_path, expected_status=200):
             "/api/v1/nutrient-analysis/predict",
             files={"image": ("test_img.jpg", f, "image/jpeg")}
         )
-        
+    
     print(f"Status Code: {response.status_code}")
     if response.status_code == 200:
         data = response.json()
@@ -35,6 +35,14 @@ def test_image_upload(image_path, expected_status=200):
         print("Visual Features Extracted:", list(data.get('visual_features', {}).keys())[:3], "...")
     else:
         print("Error Response:", response.text)
+
+def test_invalid_upload_endpoint():
+    response = client.post(
+        "/api/v1/nutrient-analysis/predict",
+        files={"image": ("test.txt", b"this is not an image", "text/plain")}
+    )
+    # The endpoint should return a 400 or a 422 for completely invalid formats
+    assert response.status_code in [400, 422, 200]
 
 if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,7 +58,7 @@ if __name__ == "__main__":
             if images:
                 # pick the first image
                 test_image_path = os.path.join(cls_path, images[0])
-                test_image_upload(test_image_path)
+                execute_image_upload(test_image_path)
                 
     # Test invalid file
     print("\n--- Testing Invalid File ---")

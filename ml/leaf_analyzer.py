@@ -80,17 +80,8 @@ def get_color_mask(hsv_img, bounds, wrap_bounds=None):
     return mask
 
 def extract_color_features(img, leaf_mask):
-    total_leaf_pixels = cv2.countNonZero(leaf_mask)
-    if total_leaf_pixels == 0:
-        return None, None
-        
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    
-    # Means
-    mean_bgr = cv2.mean(img, mask=leaf_mask)[:3]
-    mean_hsv = cv2.mean(hsv, mask=leaf_mask)[:3]
-    mean_lab = cv2.mean(lab, mask=leaf_mask)[:3]
     
     # Color Masks
     green_mask = get_color_mask(hsv, COLOR_BOUNDS['green'])
@@ -98,11 +89,30 @@ def extract_color_features(img, leaf_mask):
     brown_mask = get_color_mask(hsv, COLOR_BOUNDS['brown'], COLOR_BOUNDS_WRAP['brown_wrap'])
     rust_mask = get_color_mask(hsv, COLOR_BOUNDS['rust'], COLOR_BOUNDS_WRAP['rust_wrap'])
     
-    # Intersection with leaf mask
-    green_mask = cv2.bitwise_and(green_mask, leaf_mask)
-    yellow_mask = cv2.bitwise_and(yellow_mask, leaf_mask)
-    brown_mask = cv2.bitwise_and(brown_mask, leaf_mask)
-    rust_mask = cv2.bitwise_and(rust_mask, leaf_mask)
+    # Combine all valid plant colors
+    plant_mask = cv2.bitwise_or(green_mask, cv2.bitwise_or(yellow_mask, cv2.bitwise_or(brown_mask, rust_mask)))
+    
+    # Intersect filled contour mask with plant color mask to exclude background spaces (e.g. white sheet between leaflets)
+    true_leaf_mask = cv2.bitwise_and(leaf_mask, plant_mask)
+    
+    total_leaf_pixels = cv2.countNonZero(true_leaf_mask)
+    if total_leaf_pixels == 0:
+        # Fallback to original leaf_mask if no pixels match to avoid division by zero
+        true_leaf_mask = leaf_mask
+        total_leaf_pixels = cv2.countNonZero(leaf_mask)
+        if total_leaf_pixels == 0:
+            return None, None
+        
+    # Means (calculated only on actual plant tissue)
+    mean_bgr = cv2.mean(img, mask=true_leaf_mask)[:3]
+    mean_hsv = cv2.mean(hsv, mask=true_leaf_mask)[:3]
+    mean_lab = cv2.mean(lab, mask=true_leaf_mask)[:3]
+    
+    # Intersection with true_leaf_mask
+    green_mask = cv2.bitwise_and(green_mask, true_leaf_mask)
+    yellow_mask = cv2.bitwise_and(yellow_mask, true_leaf_mask)
+    brown_mask = cv2.bitwise_and(brown_mask, true_leaf_mask)
+    rust_mask = cv2.bitwise_and(rust_mask, true_leaf_mask)
     
     discolored_mask = cv2.bitwise_or(yellow_mask, cv2.bitwise_or(brown_mask, rust_mask))
     
@@ -114,7 +124,7 @@ def extract_color_features(img, leaf_mask):
         'discolored_ratio': cv2.countNonZero(discolored_mask) / total_leaf_pixels,
         'mean_r': mean_bgr[2], 'mean_g': mean_bgr[1], 'mean_b': mean_bgr[0],
         'mean_h': mean_hsv[0], 'mean_s': mean_hsv[1], 'mean_v': mean_hsv[2],
-        'mean_l': mean_lab[0], 'mean_a': mean_lab[1], 'mean_b': mean_lab[2],
+        'mean_l': mean_lab[0], 'mean_a': mean_lab[1], 'mean_b_lab': mean_lab[2],
         'total_leaf_area': total_leaf_pixels
     }
     return feats, discolored_mask
