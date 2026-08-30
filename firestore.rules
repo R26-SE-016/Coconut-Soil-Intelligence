@@ -1,0 +1,16 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // User-specific data isolation: Only the authenticated user can access their own scans
+    match /users/{userId}/nutrient_scans/{scanId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Global static content: Read-only access to all authenticated users, write is restricted
+    match /deficiencies/{deficiencyId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Write operations are only permitted via the backend Admin SDK
+    }
+  }
+}
