@@ -74,3 +74,35 @@ class LocationResponse(BaseModel):
     agro_ecological_zone: Optional[str] = Field(None, description="Detailed agro-ecological zone from GIS", example="WM3b")
     message: Optional[str] = None
     raw_attributes: Optional[Dict[str, Any]] = Field(None, description="Raw attributes returned from NSDI GIS API")
+
+class SaveNutrientScanRequest(BaseModel):
+    user_id: str
+    palm_age: str
+    palm_stage: str
+    zone: str
+    image_uri: Optional[str] = None
+    prediction: Optional[ImagePredictionDetails] = None
+    recommendation: Optional[ImageRecommendationAdvice] = None
+
+class LabRecommendationRequest(BaseModel):
+    nitrogen: float
+    phosphorus: float
+    potassium: float
+    magnesium: Optional[float] = None
+    palm_age: float
+    zone: str
+
+class LabRecommendationResponse(BaseModel):
+    urea: int
+    erp_or_tsp: int
+    mop: int
+    dolomite: int
+    phosphate_type: str
+    evalN: str
+    evalP: str
+    evalK: str
+    evalMg: str
+    health_status: str
+    agronomic_advice: list[str]
+
+
