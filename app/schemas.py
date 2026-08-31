@@ -56,6 +56,12 @@ class ImageRecommendationAdvice(BaseModel):
     assessment_type: str
     advice: str
 
+class CNNComparisonDetails(BaseModel):
+    model_name: str = "Custom CNN (Baseline)"
+    prediction: str
+    confidence: float
+    accuracy: float = 64.2
+
 class ImagePredictionResponse(BaseModel):
     success: bool
     status: str
@@ -63,6 +69,7 @@ class ImagePredictionResponse(BaseModel):
     prediction: Optional[ImagePredictionDetails] = None
     recommendation: Optional[ImageRecommendationAdvice] = None
     visual_features: Optional[Dict[str, float]] = None
+    cnn_comparison: Optional[CNNComparisonDetails] = None
 
 class LocationRequest(BaseModel):
     latitude: float = Field(..., description="Latitude of the location", example=7.29)

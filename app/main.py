@@ -573,6 +573,8 @@ async def predict_nutrient_from_image(image: UploadFile = File(...)):
     
     # Merge the visual features into the response for transparency
     rec_result["visual_features"] = visual_features
+    if "cnn_comparison" in result:
+        rec_result["cnn_comparison"] = result["cnn_comparison"]
     
     return rec_result
 
@@ -604,58 +606,82 @@ def get_agro_climatic_zone(req: LocationRequest):
     
     try:
         req_obj = urllib.request.Request(full_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req_obj, timeout=10.0) as response:
+        # Use a shorter timeout to failover quickly during demo/viva if connection is slow
+        with urllib.request.urlopen(req_obj, timeout=3.5) as response:
             data = json.loads(response.read().decode('utf-8'))
-    except Exception as e:
-        return LocationResponse(success=False, message=f"NSDI Service Failure: {str(e)}")
+            
+        if "error" in data:
+            raise ValueError(f"NSDI API Error: {data['error'].get('message', 'Unknown Error')}")
+            
+        features = data.get("features", [])
+        if not features:
+            return LocationResponse(
+                success=True,
+                zone="Intermediate",  # Sensible default fallback inside boundary/ocean
+                agro_ecological_zone="IL1a",
+                message="No features returned by NSDI. Used local Intermediate fallback.",
+                raw_attributes=None
+            )
+            
+        attrs = features[0].get("attributes", {})
+        climatic_zone = attrs.get("climatic_zone", "")
+        agro_eco_zone = attrs.get("agro_eco_zone", "")
         
-    # 3. Handle response format errors
-    if "error" in data:
-        return LocationResponse(success=False, message=f"NSDI API Error: {data['error'].get('message', 'Unknown Error')}", raw_attributes=data)
-        
-    features = data.get("features", [])
-    if not features:
+        major_zone = None
+        if climatic_zone:
+            cz_upper = str(climatic_zone).strip().upper()
+            if "WET" in cz_upper:
+                major_zone = "Wet"
+            elif "INTERMEDIATE" in cz_upper:
+                major_zone = "Intermediate"
+            elif "DRY" in cz_upper:
+                major_zone = "Dry"
+                
+        if not major_zone and agro_eco_zone:
+            a_upper = str(agro_eco_zone).strip().upper()
+            if a_upper.startswith("W"):
+                major_zone = "Wet"
+            elif a_upper.startswith("I"):
+                major_zone = "Intermediate"
+            elif a_upper.startswith("D"):
+                major_zone = "Dry"
+                
+        if not major_zone:
+            major_zone = "Intermediate"
+            
         return LocationResponse(
-            success=True, 
-            zone=None, 
-            agro_ecological_zone=None, 
-            message="No agro-ecological zone found for these coordinates. (Might be ocean or outside boundary).",
-            raw_attributes=None
+            success=True,
+            zone=major_zone,
+            agro_ecological_zone=agro_eco_zone,
+            message="Zone successfully detected via NSDI.",
+            raw_attributes=attrs
         )
         
-    # 4. Normalize based on priority (climatic_zone -> agro_eco_zone prefix)
-    attrs = features[0].get("attributes", {})
-    climatic_zone = attrs.get("climatic_zone", "")
-    agro_eco_zone = attrs.get("agro_eco_zone", "")
-    
-    major_zone = None
-    
-    if climatic_zone:
-        cz_upper = str(climatic_zone).strip().upper()
-        if "WET" in cz_upper:
-            major_zone = "Wet"
-        elif "INTERMEDIATE" in cz_upper:
+    except Exception as e:
+        # Fallback zone detection if NSDI service is offline, times out, or has SSL errors
+        # Determine based on lat/lon
+        if 5.9 <= lat <= 9.9 and 79.6 <= lon <= 81.9:
+            if lat > 7.8 or lon > 80.9:
+                major_zone = "Dry"
+                agro_eco_zone = "DL1"
+            elif lat < 7.3 and lon < 80.5:
+                major_zone = "Wet"
+                agro_eco_zone = "WL1"
+            else:
+                major_zone = "Intermediate"
+                agro_eco_zone = "IL1a"
+        else:
+            # Default fallback if coordinates are outside Sri Lanka
             major_zone = "Intermediate"
-        elif "DRY" in cz_upper:
-            major_zone = "Dry"
+            agro_eco_zone = "IL1a"
             
-    # Fallback to prefix if climatic_zone doesn't contain expected keywords
-    if not major_zone and agro_eco_zone:
-        a_upper = str(agro_eco_zone).strip().upper()
-        if a_upper.startswith("W"):
-            major_zone = "Wet"
-        elif a_upper.startswith("I"):
-            major_zone = "Intermediate"
-        elif a_upper.startswith("D"):
-            major_zone = "Dry"
-            
-    return LocationResponse(
-        success=True,
-        zone=major_zone,
-        agro_ecological_zone=agro_eco_zone,
-        message="Zone successfully detected." if major_zone else "Zone detected but major zone format is unrecognized.",
-        raw_attributes=attrs
-    )
+        return LocationResponse(
+            success=True,
+            zone=major_zone,
+            agro_ecological_zone=agro_eco_zone,
+            message=f"Zone estimated via local geographic heuristic (NSDI Service unavailable: {str(e)}).",
+            raw_attributes={"error_fallback": str(e)}
+        )
 
 @app.get("/api/v1/nutrient-analysis/deficiencies")
 def get_deficiencies():
@@ -723,104 +749,195 @@ def get_lab_recommendation(data: LabRecommendationRequest):
         age_val = data.palm_age
         zone = data.zone
 
-        # Determine evaluations
-        # N range: 1.90 - 2.10
+        is_adult = age_val >= 4
+        is_dry_zone = "dry" in zone.lower()
+
+        # -------------------------------------------------------------
+        # 1. Nitrogen (N) Evaluation & Urea Calculation
+        # -------------------------------------------------------------
         evalN = 'Optimal'
         if n_val < 1.90:
             evalN = 'Deficient'
         elif n_val > 2.10:
             evalN = 'Excess'
 
-        # P range: 0.11 - 0.13
-        evalP = 'Optimal'
-        if p_val < 0.11:
-            evalP = 'Deficient'
-        elif p_val > 0.13:
-            evalP = 'Excess'
+        # Urea rates for Adult Palms (grams per palm per year)
+        if 1.90 <= n_val <= 2.10:
+            urea = 800
+        elif 1.70 <= n_val < 1.90:
+            urea = 900
+        elif 1.60 <= n_val < 1.70:
+            urea = 1000
+        elif n_val < 1.60:
+            urea = 1100
+        else:  # n_val > 2.10 (Excess)
+            urea = 500
 
-        # K range: 1.20 - 1.50
+        # -------------------------------------------------------------
+        # 2. Potassium (K) Evaluation & MOP Calculation
+        # -------------------------------------------------------------
         evalK = 'Optimal'
         if k_val < 1.20:
             evalK = 'Deficient'
         elif k_val > 1.50:
             evalK = 'Excess'
 
-        # Mg range: 0.20 - 0.35
+        # MOP rates for Adult Palms (grams per palm per year)
+        if 1.20 <= k_val <= 1.50:
+            mop = 1600
+        elif 1.00 <= k_val < 1.20:
+            mop = 1700
+        elif 0.80 <= k_val < 1.00:
+            mop = 1800
+        elif 0.70 <= k_val < 0.80:
+            mop = 1900
+        elif 0.60 <= k_val < 0.70:
+            mop = 2000
+        else:  # k_val < 0.60
+            if k_val > 1.50:  # Excess
+                mop = 1000
+            else:
+                mop = 2200
+
+        # -------------------------------------------------------------
+        # 3. Phosphorus (P) Evaluation & ERP/TSP Calculation
+        # -------------------------------------------------------------
+        evalP = 'Optimal'
+        if p_val < 0.11:
+            evalP = 'Deficient'
+        elif p_val > 0.13:
+            evalP = 'Excess'
+
+        phosphate_type = 'TSP' if is_dry_zone else 'ERP'
+        erp_or_tsp = 900
+        p_special_advice = None
+
+        if 0.11 <= p_val <= 0.13:
+            erp_or_tsp = 400 if is_dry_zone else 900
+        elif 0.09 <= p_val < 0.11:
+            # Table: 0.09 - 0.11 -> ERP: 0.8 kg, IRP: 0.6 kg, TSP: 0.4 kg (depending on zone)
+            erp_or_tsp = 400 if is_dry_zone else 800
+        elif 0.08 <= p_val < 0.09:
+            # Table: 0.08 - 0.09 -> IRP 0.3 kg + TSP 0.3 kg
+            erp_or_tsp = 600
+            p_special_advice = "Phosphorus (P) is moderately deficient (0.08 - 0.09%). Apply 0.3 kg of Imported Rock Phosphate (IRP) + 0.3 kg of Triple Super Phosphate (TSP) to enhance absorption."
+        elif p_val < 0.08:
+            # Table: less than 0.08 -> TSP 0.6 kg
+            erp_or_tsp = 600
+            phosphate_type = 'TSP'
+            p_special_advice = "Phosphorus (P) is severely deficient (< 0.08%). Apply 0.6 kg of Triple Super Phosphate (TSP) directly to the root zone."
+        else:  # p_val > 0.13 (Excess)
+            erp_or_tsp = 200 if is_dry_zone else 400
+
+        # -------------------------------------------------------------
+        # 4. Magnesium (Mg) Evaluation & Dolomite/Kieserite Calculation
+        # -------------------------------------------------------------
         evalMg = 'N/A'
+        dolomite = 1000
+        kieserite = 0
+        mg_special_advice = None
+
         if mg_val is not None:
             evalMg = 'Optimal'
-            if mg_val < 0.20:
+            if mg_val < 0.25:
                 evalMg = 'Deficient'
             elif mg_val > 0.35:
                 evalMg = 'Excess'
 
-        # Fertilizer calculation (grams per palm per year)
-        is_adult = age_val >= 4
+            if 0.25 <= mg_val <= 0.35:
+                dolomite = 1000
+                kieserite = 0
+            elif 0.21 <= mg_val < 0.25:
+                dolomite = 2000
+                kieserite = 0
+            elif 0.15 <= mg_val < 0.21:
+                dolomite = 2000
+                kieserite = 1000
+                mg_special_advice = "Magnesium (Mg) is moderately deficient (0.15 - 0.20%). Apply 2.0 kg of Dolomite and 1.0 kg of Kieserite per palm."
+            elif 0.10 <= mg_val < 0.15:
+                dolomite = 2000
+                kieserite = 1500
+                mg_special_advice = "Magnesium (Mg) is significantly deficient (0.10 - 0.14%). Apply 2.0 kg of Dolomite and 1.5 kg of Kieserite per palm."
+            elif mg_val < 0.10:
+                dolomite = 2000
+                kieserite = 2000
+                mg_special_advice = "Magnesium (Mg) is severely deficient (< 0.10%). Apply 2.0 kg of Dolomite and 2.0 kg of Kieserite per palm as an emergency corrective measure."
+            else:  # mg_val > 0.35 (Excess)
+                dolomite = 500
+                kieserite = 0
 
-        is_dry_zone = "dry" in zone.lower()
-        base_urea = 800 if is_adult else 470
-        base_erp_tsp = 400 if is_dry_zone else (900 if is_adult else 1060)
-        base_mop = 1600 if is_adult else 470
-        base_dolomite = 1000 if is_adult else 500
+        # -------------------------------------------------------------
+        # 5. Age-Specific Baseline Lookup (Young Palms vs Adult Palms)
+        # -------------------------------------------------------------
+        if not is_adult:
+            # Look up standard young palm straight fertilizer rates (g/palm/6 months)
+            # based on CRI Circular A5 tables
+            if age_val < 1.0:  # 6 to 12 months
+                urea = 190
+                mop = 190
+                dolomite = 500
+                erp_or_tsp = 160 if is_dry_zone else 420
+            elif 1.0 <= age_val < 2.0:  # 12 to 24 months
+                urea = 235
+                mop = 235
+                dolomite = 500
+                erp_or_tsp = 200 if is_dry_zone else 530
+            elif 2.0 <= age_val < 3.0:  # 24 to 36 months
+                urea = 305
+                mop = 305
+                dolomite = 500
+                erp_or_tsp = 300 if is_dry_zone else 690
+            else:  # 3.0 <= age_val < 4.0 (36 to 48 months)
+                urea = 375
+                mop = 375
+                dolomite = 500
+                erp_or_tsp = 360 if is_dry_zone else 850
+            
+            # Reset kieserite for young palms
+            kieserite = 0
+            mg_special_advice = None
+            p_special_advice = None
 
-        # Adjust Urea based on N
-        final_urea = base_urea
-        if evalN == 'Deficient':
-            final_urea += 150 if is_adult else 80
-        elif evalN == 'Excess':
-            final_urea -= 300 if is_adult else 150
-
-        # Adjust ERP/TSP based on P
-        final_erp_tsp = base_erp_tsp
-        if evalP == 'Deficient':
-            final_erp_tsp += 200 if is_adult else 100
-        elif evalP == 'Excess':
-            final_erp_tsp -= 300 if is_adult else 150
-
-        # Adjust MOP based on K
-        final_mop = base_mop
-        if evalK == 'Deficient':
-            final_mop += 500 if is_adult else 250
-        elif evalK == 'Excess':
-            final_mop -= 600 if is_adult else 300
-
-        # Adjust Dolomite based on Mg
-        final_dolomite = base_dolomite
-        if evalMg == 'Deficient':
-            final_dolomite += 500 if is_adult else 250
-        elif evalMg == 'Excess':
-            final_dolomite -= 400 if is_adult else 200
-
-        # Ensure non-negative values
-        final_urea = max(0, final_urea)
-        final_erp_tsp = max(0, final_erp_tsp)
-        final_mop = max(0, final_mop)
-        final_dolomite = max(0, final_dolomite)
-
-        # Build overall status string
-        is_healthy = evalN == 'Optimal' and evalP == 'Optimal' and evalK == 'Optimal' and (evalMg == 'N/A' or evalMg == 'Optimal')
+        # -------------------------------------------------------------
+        # 6. Agronomic Advice & Response Formulating
+        # -------------------------------------------------------------
+        is_healthy = (evalN == 'Optimal' and evalP == 'Optimal' and 
+                      evalK == 'Optimal' and (evalMg == 'N/A' or evalMg == 'Optimal'))
         health_status = 'Healthy Palm' if is_healthy else 'Fertilizer Required'
 
-        # Build agronomic advice list
-        advice_list = [
-            'Apply fertilizer in a circular trench 1.8m away from the base of the palm.',
-            'Divide the annual dosage into two equal applications (Yala and Maha seasons).'
-        ]
+        if is_adult:
+            advice_list = [
+                'Apply fertilizer in a circular trench 1.8m away from the base of the palm.',
+                'Divide the annual dosage into two equal applications (Yala and Maha seasons).'
+            ]
 
-        if evalN == 'Deficient':
-            advice_list.append('Apply Urea corrective dose to correct Nitrogen deficiency.')
-        if evalK == 'Deficient':
-            advice_list.append('Bury coconut husks in trenches between rows to help conserve moisture and recycle Potassium.')
-        if evalMg == 'Deficient':
-            advice_list.append('Apply Dolomite (or Kieserite for rapid recovery) to treat Magnesium deficiency.')
-
-        phosphate_type = 'TSP' if is_dry_zone else 'ERP'
+            if evalN == 'Deficient':
+                advice_list.append(f"Apply {urea}g of Urea per year to correct Nitrogen deficiency.")
+            if evalK == 'Deficient':
+                advice_list.append(f"Apply {mop}g of Muriate of Potash (MOP) per year. Bury coconut husks in trenches between rows to recycle Potassium and conserve moisture.")
+            
+            if p_special_advice:
+                advice_list.append(p_special_advice)
+            elif evalP == 'Deficient':
+                advice_list.append(f"Apply {erp_or_tsp}g of {phosphate_type} per year to correct Phosphorus deficiency.")
+                
+            if mg_special_advice:
+                advice_list.append(mg_special_advice)
+            elif evalMg == 'Deficient':
+                advice_list.append(f"Apply {dolomite}g of Dolomite to buffer soil acidity and supply Magnesium.")
+        else:
+            advice_list = [
+                f"For young palms (age {age_val} yrs), apply standard CRI straight fertilizer dosage every 6 months.",
+                'Apply fertilizer in a circle starting 30cm to 90cm away from the base depending on growth.',
+                f"Apply {urea}g of Urea, {erp_or_tsp}g of {phosphate_type}, {mop}g of MOP, and {dolomite}g of Dolomite per application.",
+                "Leaf analysis-based adjustments are not required for young vegetative palms under 4 years."
+            ]
 
         return LabRecommendationResponse(
-            urea=final_urea,
-            erp_or_tsp=final_erp_tsp,
-            mop=final_mop,
-            dolomite=final_dolomite,
+            urea=urea,
+            erp_or_tsp=erp_or_tsp,
+            mop=mop,
+            dolomite=dolomite,
             phosphate_type=phosphate_type,
             evalN=f"{evalN} (N)",
             evalP=f"{evalP} (P)",
