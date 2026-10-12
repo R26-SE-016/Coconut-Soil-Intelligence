@@ -92,6 +92,16 @@ def validate_basic_leaf_input(image: np.ndarray, leaf_mask: np.ndarray, feats: d
 
 
 def verify_coconut_leaf_via_plantnet(image: np.ndarray) -> Tuple[bool, str]:
+    """
+    Verifies whether the uploaded image is a coconut leaf using the PlantNet API.
+    
+    Strategy:
+    - Scans ALL returned results (not just top-1) for Arecaceae (palm family) or Cocos genus.
+    - If ANY result matches palm/coconut family → PASS (it's likely a coconut/palm leaf).
+    - If PlantNet returns 404 (species not found) → REJECT (image is not a recognizable plant).
+    - If PlantNet returns results but NONE are palms → REJECT with detected plant name.
+    - On API error or missing key → gracefully PASS (let other validators handle it).
+    """
     api_key = os.getenv("PLANTNET_API_KEY")
     if not api_key:
         return True, ""
@@ -110,34 +120,58 @@ def verify_coconut_leaf_via_plantnet(image: np.ndarray) -> Tuple[bool, str]:
             'organs': ['leaf']
         }
         
-        response = requests.post(url, files=files, data=data, timeout=8.0)
+        response = requests.post(url, files=files, data=data, timeout=10.0)
+        
+        # 404 = PlantNet could not identify ANY plant species in the image
+        if response.status_code == 404:
+            print("[INFO] PlantNet: No plant species found in image (404)")
+            return False, "The uploaded image does not appear to contain a recognizable plant leaf. Please upload a clear photo of a coconut leaf."
         
         if response.status_code == 200:
             res_json = response.json()
             results = res_json.get('results', [])
             
-            if results:
-                top_match = results[0]
-                species = top_match.get('species', {})
+            if not results:
+                # API returned 200 but empty results — unlikely but handle gracefully
+                return True, ""
+            
+            # --- Scan ALL results for any palm/coconut match ---
+            PALM_FAMILIES = {"Arecaceae"}
+            COCONUT_GENERA = {"Cocos"}
+            COCONUT_SPECIES = {"Cocos nucifera"}
+            
+            for result in results:
+                species = result.get('species', {})
                 scientific_name = species.get('scientificNameWithoutAuthor', '')
-                common_names = species.get('commonNames', [])
-                score = top_match.get('score', 0.0)
                 
-                if score > 0.25:
-                    genus_info = species.get('genus', {})
-                    genus_name = genus_info.get('scientificNameWithoutAuthor', '') if isinstance(genus_info, dict) else str(genus_info)
-                    
-                    family_info = species.get('family', {})
-                    family_name = family_info.get('scientificNameWithoutAuthor', '') if isinstance(family_info, dict) else str(family_info)
-                    
-                    is_palm = "Arecaceae" in family_name
-                    is_coconut = "Cocos nucifera" in scientific_name or "Cocos" in genus_name or is_palm
-                    
-                    if is_coconut:
-                        return True, ""
-                    
-                    plant_name = common_names[0] if common_names else scientific_name
-                    return False, f"Detected plant: {plant_name}. This system only analyzes coconut leaves. Please upload a clear coconut leaf image."
+                genus_info = species.get('genus', {})
+                genus_name = genus_info.get('scientificNameWithoutAuthor', '') if isinstance(genus_info, dict) else str(genus_info)
+                
+                family_info = species.get('family', {})
+                family_name = family_info.get('scientificNameWithoutAuthor', '') if isinstance(family_info, dict) else str(family_info)
+                
+                # Check if this result is a coconut or palm
+                if (scientific_name in COCONUT_SPECIES or 
+                    genus_name in COCONUT_GENERA or 
+                    family_name in PALM_FAMILIES):
+                    print(f"[INFO] PlantNet: Coconut/palm match found — {scientific_name} (family: {family_name})")
+                    return True, ""
+            
+            # No palm/coconut found in ANY result — this is likely a different plant
+            top_species = results[0].get('species', {})
+            top_common_names = top_species.get('commonNames', [])
+            top_scientific = top_species.get('scientificNameWithoutAuthor', 'Unknown')
+            plant_name = top_common_names[0] if top_common_names else top_scientific
+            
+            print(f"[INFO] PlantNet: Non-coconut plant detected — {plant_name} ({top_scientific})")
+            return False, f"Detected plant: {plant_name}. This system only analyzes coconut leaves. Please upload a clear coconut leaf image."
+        
+        # Other HTTP errors (rate limit, server error, etc.) — pass gracefully
+        print(f"[WARN] PlantNet API returned status {response.status_code}")
+        return True, ""
+        
+    except requests.exceptions.Timeout:
+        print("[WARN] PlantNet API request timed out")
         return True, ""
     except Exception as e:
         print(f"[WARN] PlantNet API verification failed: {e}")

@@ -5,18 +5,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import json
-import joblib #Machine Learning models save/load
 from fastapi import FastAPI, HTTPException, status, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware #Frontend → Backend request allow
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any
 
 from app.schemas import (
-    TriangulatedSoilInput,
-    PredictionResponse,
-    AnalysisStartRequest,
-    AnalysisStartResponse,
-    PointReadingInput,
-    AnalysisCompleteRequest,
     ImagePredictionResponse,
     LocationRequest,
     LocationResponse,
@@ -24,20 +17,17 @@ from app.schemas import (
     LabRecommendationRequest,
     LabRecommendationResponse
 )
-from ml.cri_recommender import calculate_cri_fertilizer
-from ml.train_models import train_and_evaluate_models
 from ml.nutrient_predictor import predict_image
 from ml.image_recommender import get_image_based_recommendation
 import firebase_admin
 from firebase_admin import credentials, firestore
-import uuid
 import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 
 app = FastAPI(
-    title="SaruPol - AI & IoT Coconut Soil Intelligence API",
-    description="Backend Decision Support System for Coconut Plantation Monitoring and Advisory (R26-SE-016)",
+    title="SaruPol - AI Coconut Nutrient & Lab Intelligence API",
+    description="Backend Decision Support System for Coconut Leaf Nutrient Analysis and Laboratory Advisory",
     version="1.0.0"
 )
 
@@ -50,12 +40,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global model holder
-active_model_pipeline = None
-active_model_name = "Not Loaded"
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-model_path = os.path.join(base_dir, "ml", "saved_models", "best_soil_to_leaf_model.joblib")
-report_path = os.path.join(base_dir, "ml", "saved_models", "model_comparison_report.json")
 
 # Initialize Firebase
 firebase_cred_path = os.path.join(base_dir, "firebase-credentials.json")
@@ -198,39 +183,20 @@ def seed_deficiencies_if_empty():
     except Exception as e:
          print(f"[ERROR] Seeding deficiencies failed: {e}")
 
-def load_active_model():
-    global active_model_pipeline, active_model_name
-    if os.path.exists(model_path):
-        try:
-            active_model_pipeline = joblib.load(model_path)
-            if os.path.exists(report_path):
-                with open(report_path, "r", encoding="utf-8") as f:
-                    rep = json.load(f)  #model comparison report read
-                    active_model_name = rep.get("best_model", "Trained ML Model")
-            else:
-                active_model_name = "Trained ML Model"
-            print(f"[OK] Loaded ML Model: {active_model_name}")
-        except Exception as e:
-            print(f"[WARN] Failed to load model: {e}")
-    else:
-        print("[WARN] No saved model found. Use POST /api/v1/models/train to train models.")
-
 @app.on_event("startup")
 def on_startup():
     seed_deficiencies_if_empty()
-    load_active_model()
 
 @app.get("/")
 def read_root():
     return {
-        "project": "SaruPol - AI & IoT Coconut Soil Intelligence System",
-        "research_id": "R26-SE-016",
+        "project": "SaruPol - AI Coconut Nutrient & Lab Intelligence System",
         "status": "Online",
-        "active_model": active_model_name,
         "endpoints": {
-            "triangulated_prediction": "POST /api/v1/predict/triangulated",
-            "train_models": "POST /api/v1/models/train",
-            "model_status": "GET /api/v1/models/status"
+            "image_prediction": "POST /api/v1/nutrient-analysis/predict",
+            "lab_recommendation": "POST /api/v1/nutrient-analysis/lab-recommendation",
+            "agro_zone": "POST /api/v1/location/agro-zone",
+            "deficiencies": "GET /api/v1/nutrient-analysis/deficiencies"
         }
     }
 
@@ -239,297 +205,17 @@ def read_root():
 def health_check():
     return {
         "status": "healthy",
-        "service": "Coconut Soil Intelligence",
-        "active_model": active_model_name,
+        "service": "Coconut Nutrient & Lab Intelligence",
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-@app.get("/api/v1/models/status")
-def get_model_status():
-    if not os.path.exists(report_path):
-        return {"status": "No model trained yet. Please call POST /api/v1/models/train"}
-    with open(report_path, "r", encoding="utf-8") as f:
-        rep = json.load(f)
-    return {
-        "active_model_loaded": active_model_name,
-        "comparison_report": rep
-    }
-
-@app.get("/api/v1/trees")
-def get_all_trees():
-    """
-    Returns all empirical coconut tree samples from Makandura Estate (All.csv)
-    along with their evaluated CRI health status.
-    """
-    data_path = os.path.join(base_dir, "data", "All.csv")
-    if not os.path.exists(data_path):
-        raise HTTPException(status_code=404, detail="All.csv dataset not found")
-    
-    import pandas as pd
-    df = pd.read_csv(data_path)
-    df.columns = [c.strip() for c in df.columns]
-    
-    trees = []
-    healthy_cnt = 0
-    deficient_cnt = 0
-    excess_cnt = 0
-    
-    for idx, row in df.iterrows():
-        try:
-            t_no = int(row['Tree No'])
-            s_n = float(row.get('Soil N', 0.015))
-            s_p = float(row.get('Soil P', 0.15))
-            s_k = float(row.get('Soil K', 0.06))
-            l_n = float(row.get('Leaf N', 1.8)) if pd.notna(row.get('Leaf N')) else 1.8
-            l_p = float(row.get('Leaf P', 0.12)) if pd.notna(row.get('Leaf P')) else 0.12
-            l_k = float(row.get('Leaf K', 1.3)) if pd.notna(row.get('Leaf K')) else 1.3
-            
-            cri = calculate_cri_fertilizer(l_n, l_p, l_k)
-            st = cri["status"]
-            if "Optimal" in st:
-                healthy_cnt += 1
-            elif "Excess" in st:
-                excess_cnt += 1
-            else:
-                deficient_cnt += 1
-                
-            trees.append({
-                "tree_no": t_no,
-                "soil_npk": {"N": round(s_n, 4), "P": round(s_p, 4), "K": round(s_k, 4)},
-                "leaf_npk": {"N": round(l_n, 4), "P": round(l_p, 4), "K": round(l_k, 4)},
-                "health_status": st,
-                "fertilizer_recommendation": cri["dosages_grams_per_palm_per_year"]
-            })
-        except Exception:
-            continue
-            
-    return {
-        "estate_name": "CRI Makandura Research Station",
-        "total_trees_analyzed": len(trees),
-        "summary": {
-            "optimal_health": healthy_cnt,
-            "nutrient_deficiency": deficient_cnt,
-            "excess_fertilizer": excess_cnt
-        },
-        "trees": trees
-    }
-
-@app.post("/api/v1/models/train")
-def trigger_model_training():
-    """
-    Trains and evaluates 3 ML algorithms (Random Forest, Extra Trees, KNN) on All.csv.
-    Selects and saves the model with the highest average R² score.
-    """
-    try:
-        best_name, best_r2, results = train_and_evaluate_models()
-        load_active_model()
-        return {
-            "message": "Model training and evaluation completed successfully!",
-            "winning_model": best_name,
-            "best_average_r2_score": best_r2,
-            "detailed_comparison": results
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
-
-def execute_prediction_pipeline(tree_no: int, sampling_method: str, avg_n: float, avg_p: float, avg_k: float, soil_ph: float = 6.5) -> PredictionResponse:
-    global active_model_pipeline, active_model_name
-    if active_model_pipeline is None:
-        load_active_model()
-        if active_model_pipeline is None:
-            raise HTTPException(status_code=503, detail="ML Model is not loaded or trained yet. Please call POST /api/v1/models/train first.")
-    
-    # Stage 1: Predict 14th Leaf NPK using ML Model
-    try:
-        pred_leaf = active_model_pipeline.predict([[avg_n, avg_p, avg_k]])[0]
-        leaf_n = round(float(pred_leaf[0]), 4)
-        leaf_p = round(float(pred_leaf[1]), 4)
-        leaf_k = round(float(pred_leaf[2]), 4)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Model prediction error: {str(e)}")
-
-    # Stage 2: Apply CRI Rule-Based Expert System
-    cri_result = calculate_cri_fertilizer(leaf_n, leaf_p, leaf_k, soil_ph)
-
-    return PredictionResponse(
-        tree_no=tree_no,
-        sampling_method=sampling_method,
-        average_soil_npk={"N": round(avg_n, 4), "P": round(avg_p, 4), "K": round(avg_k, 4)},
-        predicted_14th_leaf_npk={"N": leaf_n, "P": leaf_p, "K": leaf_k},
-        health_status=cri_result["status"],
-        fertilizer_recommendation_grams_per_year=cri_result["dosages_grams_per_palm_per_year"],
-        nutrient_evaluation=cri_result["nutrient_status"],
-        agronomic_advice=cri_result["agronomic_advice"],
-        model_used=active_model_name
-    )
-
-@app.post("/api/v1/predict/triangulated", response_model=PredictionResponse)
-def predict_triangulated(data: TriangulatedSoilInput):
-    """
-    Recommended Research Protocol: 3-Point Triangulated Spatial Sampling.
-    Takes 3 sensor readings around the 1.8m manure circle, calculates average, and predicts fertilizer dosage.
-    """
-    avg_n = (data.point_a.N + data.point_b.N + data.point_c.N) / 3.0
-    avg_p = (data.point_a.P + data.point_b.P + data.point_c.P) / 3.0
-    avg_k = (data.point_a.K + data.point_b.K + data.point_c.K) / 3.0
-    
-    # Use pH from point A or average
-    soil_ph = data.point_a.pH if data.point_a.pH is not None else 6.5
-
-    return execute_prediction_pipeline(
-        tree_no=data.tree_no,
-        sampling_method="3-Point Spatial Triangulated Sampling (Manure Circle Composite)",
-        avg_n=avg_n,
-        avg_p=avg_p,
-        avg_k=avg_k,
-        soil_ph=soil_ph
-    )
-
-
-
 # ---------------------------------------------------------
-# IoT Firebase Integration Endpoints
+# Image Scan Part: Leaf Nutrient Deficiency Detection
 # ---------------------------------------------------------
-
-@app.post("/api/v1/analysis/start", response_model=AnalysisStartResponse)
-def start_analysis(data: AnalysisStartRequest):
-    if db is None:
-        raise HTTPException(status_code=500, detail="Firebase not configured")
-    
-    analysis_id = f"AN-{data.tree_no}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:4]}"
-    
-    doc_ref = db.collection("trees").document(data.tree_no).collection("analyses").document(analysis_id)
-    doc_ref.set({
-        "status": "in_progress",
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "readings": {}
-    })
-    
-    return AnalysisStartResponse(
-        analysis_id=analysis_id,
-        tree_no=data.tree_no,
-        status="in_progress",
-        message="Analysis session started successfully. Please capture Point 1."
-    )
-
-@app.post("/api/v1/analysis/reading")
-def add_reading(data: PointReadingInput):
-    if db is None:
-        raise HTTPException(status_code=500, detail="Firebase not configured")
-        
-    if data.point_name not in ["point1", "point2", "point3"]:
-        raise HTTPException(status_code=400, detail="point_name must be point1, point2, or point3")
-        
-    if not data.analysis_id or not data.analysis_id.strip():
-        raise HTTPException(status_code=400, detail="analysis_id cannot be empty")
-        
-    doc_ref = db.collection("trees").document(data.tree_no).collection("analyses").document(data.analysis_id)
-    doc = doc_ref.get()
-    
-    if not doc.exists:
-        raise HTTPException(status_code=404, detail="Analysis session not found.")
-        
-    reading_data = {
-        "N": data.reading.N,
-        "P": data.reading.P,
-        "K": data.reading.K,
-        "pH": data.reading.pH,
-        "EC": data.reading.EC,
-        "moisture": data.reading.moisture,
-        "temperature": data.reading.temperature
-    }
-    
-    doc_ref.update({
-        f"readings.{data.point_name}": reading_data
-    })
-    
-    return {"message": f"Successfully saved {data.point_name} for analysis {data.analysis_id}"}
-
-@app.post("/api/v1/analysis/complete")
-def complete_analysis(data: AnalysisCompleteRequest):
-    if db is None:
-        raise HTTPException(status_code=500, detail="Firebase not configured")
-        
-    if not data.analysis_id or not data.analysis_id.strip():
-        raise HTTPException(status_code=400, detail=f"analysis_id cannot be empty. Received: '{data.analysis_id}'")
-        
-    doc_ref = db.collection("trees").document(data.tree_no).collection("analyses").document(data.analysis_id)
-    doc = doc_ref.get()
-    
-    if not doc.exists:
-        raise HTTPException(status_code=404, detail="Analysis session not found.")
-        
-    doc_data = doc.to_dict()
-    readings = doc_data.get("readings", {})
-    
-    if "point1" not in readings or "point2" not in readings or "point3" not in readings:
-        keys_found = list(readings.keys())
-        raise HTTPException(status_code=400, detail=f"Cannot complete analysis. Exact 3 valid readings required. Found: {keys_found}")
-        
-    # Calculate averages
-    avg_n = sum(r["N"] for r in readings.values()) / 3.0
-    avg_p = sum(r["P"] for r in readings.values()) / 3.0
-    avg_k = sum(r["K"] for r in readings.values()) / 3.0
-    avg_ph = sum(r.get("pH", 6.5) for r in readings.values()) / 3.0
-    avg_ec = sum(r.get("EC", 1.0) for r in readings.values()) / 3.0
-    avg_moist = sum(r.get("moisture", 50.0) for r in readings.values()) / 3.0
-    avg_temp = sum(r.get("temperature", 28.0) for r in readings.values()) / 3.0
-    
-    # Predict & Calculate CRI using the existing logic!
-    try:
-        # 1. Use the trained global model pipeline for 14th leaf
-        # We need a numeric tree_no for the old execute function, we can try to parse it or just use 0
-        try:
-            numeric_tree_no = int(''.join(filter(str.isdigit, data.tree_no)))
-        except:
-            numeric_tree_no = 0
-            
-        prediction_res = execute_prediction_pipeline(
-            tree_no=numeric_tree_no,
-            sampling_method="3-Point Spatial Triangulated IoT Sampling",
-            avg_n=avg_n,
-            avg_p=avg_p,
-            avg_k=avg_k,
-            soil_ph=avg_ph
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
-        
-    # Build the final firebase document updates
-    updates = {
-        "status": "completed",
-        "average": {
-            "N": round(avg_n, 4),
-            "P": round(avg_p, 4),
-            "K": round(avg_k, 4),
-            "pH": round(avg_ph, 2),
-            "EC": round(avg_ec, 2),
-            "moisture": round(avg_moist, 2),
-            "temperature": round(avg_temp, 2)
-        },
-        "prediction": {
-            "leafN": prediction_res.predicted_14th_leaf_npk["N"],
-            "leafP": prediction_res.predicted_14th_leaf_npk["P"],
-            "leafK": prediction_res.predicted_14th_leaf_npk["K"],
-            "modelVersion": prediction_res.model_used
-        },
-        "recommendation": {
-            "urea": prediction_res.fertilizer_recommendation_grams_per_year.get("Urea", 0) / 1000.0,
-            "ERP": prediction_res.fertilizer_recommendation_grams_per_year.get("Eppawala_Rock_Phosphate_ERP", 0) / 1000.0,
-            "MOP": prediction_res.fertilizer_recommendation_grams_per_year.get("Muriate_of_Potash_MOP", 0) / 1000.0,
-            "dolomite": prediction_res.fertilizer_recommendation_grams_per_year.get("Dolomite", 0) / 1000.0,
-            "healthStatus": prediction_res.health_status,
-            "nutrientEvaluation": prediction_res.nutrient_evaluation,
-            "agronomicAdvice": prediction_res.agronomic_advice
-        }
-    }
-    
-    doc_ref.update(updates)
-    
-    # Return everything to the caller
-    return updates
 
 @app.post("/api/v1/nutrient-analysis/predict", response_model=ImagePredictionResponse)
+@app.post("/api/nutrient/nutrient-analysis/predict", response_model=ImagePredictionResponse)
+@app.post("/api/soil/nutrient-analysis/predict", response_model=ImagePredictionResponse)
 async def predict_nutrient_from_image(image: UploadFile = File(...)):
     """
     Analyzes an uploaded coconut leaf image to predict potential nutrient deficiencies
@@ -546,13 +232,13 @@ async def predict_nutrient_from_image(image: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
         
-    status = result["status"]
+    status_str = result["status"]
     
     # If validation failed (invalid_input or uncertain)
-    if status != "success":
+    if status_str != "success":
         return {
             "success": True,
-            "status": status,
+            "status": status_str,
             "message": result["message"],
             "prediction": None,
             "recommendation": None,
@@ -564,7 +250,6 @@ async def predict_nutrient_from_image(image: UploadFile = File(...)):
     visual_features = result["features"]
     
     # Get image-specific recommendation
-    # We use a threshold of 0.60 as specified
     rec_result = get_image_based_recommendation(
         predicted_nutrient=predicted_class,
         confidence=confidence,
@@ -578,7 +263,13 @@ async def predict_nutrient_from_image(image: UploadFile = File(...)):
     
     return rec_result
 
+# ---------------------------------------------------------
+# Location & Agro-Climatic Zone
+# ---------------------------------------------------------
+
 @app.post("/api/v1/location/agro-zone", response_model=LocationResponse)
+@app.post("/api/nutrient/location/agro-zone", response_model=LocationResponse)
+@app.post("/api/soil/location/agro-zone", response_model=LocationResponse)
 def get_agro_climatic_zone(req: LocationRequest):
     lat = req.latitude
     lon = req.longitude
@@ -606,7 +297,6 @@ def get_agro_climatic_zone(req: LocationRequest):
     
     try:
         req_obj = urllib.request.Request(full_url, headers={'User-Agent': 'Mozilla/5.0'})
-        # Use a shorter timeout to failover quickly during demo/viva if connection is slow
         with urllib.request.urlopen(req_obj, timeout=3.5) as response:
             data = json.loads(response.read().decode('utf-8'))
             
@@ -617,7 +307,7 @@ def get_agro_climatic_zone(req: LocationRequest):
         if not features:
             return LocationResponse(
                 success=True,
-                zone="Intermediate",  # Sensible default fallback inside boundary/ocean
+                zone="Intermediate",
                 agro_ecological_zone="IL1a",
                 message="No features returned by NSDI. Used local Intermediate fallback.",
                 raw_attributes=None
@@ -658,8 +348,6 @@ def get_agro_climatic_zone(req: LocationRequest):
         )
         
     except Exception as e:
-        # Fallback zone detection if NSDI service is offline, times out, or has SSL errors
-        # Determine based on lat/lon
         if 5.9 <= lat <= 9.9 and 79.6 <= lon <= 81.9:
             if lat > 7.8 or lon > 80.9:
                 major_zone = "Dry"
@@ -671,7 +359,6 @@ def get_agro_climatic_zone(req: LocationRequest):
                 major_zone = "Intermediate"
                 agro_eco_zone = "IL1a"
         else:
-            # Default fallback if coordinates are outside Sri Lanka
             major_zone = "Intermediate"
             agro_eco_zone = "IL1a"
             
@@ -683,7 +370,13 @@ def get_agro_climatic_zone(req: LocationRequest):
             raw_attributes={"error_fallback": str(e)}
         )
 
+# ---------------------------------------------------------
+# Nutrient Scan History & Deficiencies Library
+# ---------------------------------------------------------
+
 @app.get("/api/v1/nutrient-analysis/deficiencies")
+@app.get("/api/nutrient/nutrient-analysis/deficiencies")
+@app.get("/api/soil/nutrient-analysis/deficiencies")
 def get_deficiencies():
     if db is None:
         raise HTTPException(status_code=500, detail="Firebase not configured")
@@ -693,13 +386,14 @@ def get_deficiencies():
         results = []
         for doc in docs:
             results.append(doc.to_dict())
-        # Sort so they appear in a predictable order, e.g. alphabetically or by id
         results.sort(key=lambda x: x.get("id", ""))
         return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch deficiencies: {str(e)}")
 
 @app.post("/api/v1/nutrient-analysis/scans")
+@app.post("/api/nutrient/nutrient-analysis/scans")
+@app.post("/api/soil/nutrient-analysis/scans")
 def save_nutrient_scan(data: SaveNutrientScanRequest):
     if db is None:
         raise HTTPException(status_code=500, detail="Firebase not configured")
@@ -724,12 +418,13 @@ def save_nutrient_scan(data: SaveNutrientScanRequest):
         raise HTTPException(status_code=500, detail=f"Failed to save scan result: {str(e)}")
 
 @app.get("/api/v1/nutrient-analysis/scans")
+@app.get("/api/nutrient/nutrient-analysis/scans")
+@app.get("/api/soil/nutrient-analysis/scans")
 def get_nutrient_scans(user_id: str):
     if db is None:
         raise HTTPException(status_code=500, detail="Firebase not configured")
     try:
         scans_ref = db.collection("users").document(user_id).collection("nutrient_scans")
-        # Query and order by timestamp descending
         docs = scans_ref.order_by("timestamp", direction="DESCENDING").stream()
         results = []
         for doc in docs:
@@ -738,8 +433,13 @@ def get_nutrient_scans(user_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch nutrient scans: {str(e)}")
 
+# ---------------------------------------------------------
+# Lab Analysis Part: Differential Fertilizer Advisory
+# ---------------------------------------------------------
 
 @app.post("/api/v1/nutrient-analysis/lab-recommendation", response_model=LabRecommendationResponse)
+@app.post("/api/nutrient/nutrient-analysis/lab-recommendation", response_model=LabRecommendationResponse)
+@app.post("/api/soil/nutrient-analysis/lab-recommendation", response_model=LabRecommendationResponse)
 def get_lab_recommendation(data: LabRecommendationRequest):
     try:
         n_val = data.nitrogen
@@ -752,16 +452,13 @@ def get_lab_recommendation(data: LabRecommendationRequest):
         is_adult = age_val >= 4
         is_dry_zone = "dry" in zone.lower()
 
-        # -------------------------------------------------------------
         # 1. Nitrogen (N) Evaluation & Urea Calculation
-        # -------------------------------------------------------------
         evalN = 'Optimal'
         if n_val < 1.90:
             evalN = 'Deficient'
         elif n_val > 2.10:
             evalN = 'Excess'
 
-        # Urea rates for Adult Palms (grams per palm per year)
         if 1.90 <= n_val <= 2.10:
             urea = 800
         elif 1.70 <= n_val < 1.90:
@@ -770,19 +467,16 @@ def get_lab_recommendation(data: LabRecommendationRequest):
             urea = 1000
         elif n_val < 1.60:
             urea = 1100
-        else:  # n_val > 2.10 (Excess)
+        else:
             urea = 500
 
-        # -------------------------------------------------------------
         # 2. Potassium (K) Evaluation & MOP Calculation
-        # -------------------------------------------------------------
         evalK = 'Optimal'
         if k_val < 1.20:
             evalK = 'Deficient'
         elif k_val > 1.50:
             evalK = 'Excess'
 
-        # MOP rates for Adult Palms (grams per palm per year)
         if 1.20 <= k_val <= 1.50:
             mop = 1600
         elif 1.00 <= k_val < 1.20:
@@ -793,15 +487,13 @@ def get_lab_recommendation(data: LabRecommendationRequest):
             mop = 1900
         elif 0.60 <= k_val < 0.70:
             mop = 2000
-        else:  # k_val < 0.60
-            if k_val > 1.50:  # Excess
+        else:
+            if k_val > 1.50:
                 mop = 1000
             else:
                 mop = 2200
 
-        # -------------------------------------------------------------
         # 3. Phosphorus (P) Evaluation & ERP/TSP Calculation
-        # -------------------------------------------------------------
         evalP = 'Optimal'
         if p_val < 0.11:
             evalP = 'Deficient'
@@ -815,23 +507,18 @@ def get_lab_recommendation(data: LabRecommendationRequest):
         if 0.11 <= p_val <= 0.13:
             erp_or_tsp = 400 if is_dry_zone else 900
         elif 0.09 <= p_val < 0.11:
-            # Table: 0.09 - 0.11 -> ERP: 0.8 kg, IRP: 0.6 kg, TSP: 0.4 kg (depending on zone)
             erp_or_tsp = 400 if is_dry_zone else 800
         elif 0.08 <= p_val < 0.09:
-            # Table: 0.08 - 0.09 -> IRP 0.3 kg + TSP 0.3 kg
             erp_or_tsp = 600
             p_special_advice = "Phosphorus (P) is moderately deficient (0.08 - 0.09%). Apply 0.3 kg of Imported Rock Phosphate (IRP) + 0.3 kg of Triple Super Phosphate (TSP) to enhance absorption."
         elif p_val < 0.08:
-            # Table: less than 0.08 -> TSP 0.6 kg
             erp_or_tsp = 600
             phosphate_type = 'TSP'
             p_special_advice = "Phosphorus (P) is severely deficient (< 0.08%). Apply 0.6 kg of Triple Super Phosphate (TSP) directly to the root zone."
-        else:  # p_val > 0.13 (Excess)
+        else:
             erp_or_tsp = 200 if is_dry_zone else 400
 
-        # -------------------------------------------------------------
         # 4. Magnesium (Mg) Evaluation & Dolomite/Kieserite Calculation
-        # -------------------------------------------------------------
         evalMg = 'N/A'
         dolomite = 1000
         kieserite = 0
@@ -862,45 +549,38 @@ def get_lab_recommendation(data: LabRecommendationRequest):
                 dolomite = 2000
                 kieserite = 2000
                 mg_special_advice = "Magnesium (Mg) is severely deficient (< 0.10%). Apply 2.0 kg of Dolomite and 2.0 kg of Kieserite per palm as an emergency corrective measure."
-            else:  # mg_val > 0.35 (Excess)
+            else:
                 dolomite = 500
                 kieserite = 0
 
-        # -------------------------------------------------------------
         # 5. Age-Specific Baseline Lookup (Young Palms vs Adult Palms)
-        # -------------------------------------------------------------
         if not is_adult:
-            # Look up standard young palm straight fertilizer rates (g/palm/6 months)
-            # based on CRI Circular A5 tables
-            if age_val < 1.0:  # 6 to 12 months
+            if age_val < 1.0:
                 urea = 190
                 mop = 190
                 dolomite = 500
                 erp_or_tsp = 160 if is_dry_zone else 420
-            elif 1.0 <= age_val < 2.0:  # 12 to 24 months
+            elif 1.0 <= age_val < 2.0:
                 urea = 235
                 mop = 235
                 dolomite = 500
                 erp_or_tsp = 200 if is_dry_zone else 530
-            elif 2.0 <= age_val < 3.0:  # 24 to 36 months
+            elif 2.0 <= age_val < 3.0:
                 urea = 305
                 mop = 305
                 dolomite = 500
                 erp_or_tsp = 300 if is_dry_zone else 690
-            else:  # 3.0 <= age_val < 4.0 (36 to 48 months)
+            else:
                 urea = 375
                 mop = 375
                 dolomite = 500
                 erp_or_tsp = 360 if is_dry_zone else 850
             
-            # Reset kieserite for young palms
             kieserite = 0
             mg_special_advice = None
             p_special_advice = None
 
-        # -------------------------------------------------------------
         # 6. Agronomic Advice & Response Formulating
-        # -------------------------------------------------------------
         is_healthy = (evalN == 'Optimal' and evalP == 'Optimal' and 
                       evalK == 'Optimal' and (evalMg == 'N/A' or evalMg == 'Optimal'))
         health_status = 'Healthy Palm' if is_healthy else 'Fertilizer Required'
@@ -949,5 +629,42 @@ def get_lab_recommendation(data: LabRecommendationRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to calculate lab recommendation: {str(e)}")
 
+# ---------------------------------------------------------
+# Pathology Hotspots Fallback / Mock Endpoints
+# ---------------------------------------------------------
+@app.get("/api/pathology/aerial/hotspots")
+def get_pathology_aerial_hotspots(estate_id: str = "estate_001", limit: int = 10, status: str = None):
+    return {
+        "estate_id": estate_id,
+        "count": 2,
+        "hotspots": [
+            {
+                "id": "hotspot_sector_b_01",
+                "estate_id": estate_id,
+                "location": {"lat": 7.2914, "lng": 80.6342},
+                "severity": "critical",
+                "mean_index_value": 0.28,
+                "radius_meters": 6.4,
+                "recommended_action": "Sector B: Immediate on-site mobile leaf scan required for Bud Rot.",
+                "status": "pending"
+            },
+            {
+                "id": "hotspot_sector_c_04",
+                "estate_id": estate_id,
+                "location": {"lat": 7.2928, "lng": 80.6325},
+                "severity": "high",
+                "mean_index_value": 0.42,
+                "radius_meters": 4.8,
+                "recommended_action": "Sector C: Crown chlorosis detected. Inspect leaf margins for Gray Leaf Spot.",
+                "status": "pending"
+            }
+        ]
+    }
 
-
+@app.patch("/api/pathology/aerial/hotspots/{hotspot_id}")
+def update_pathology_aerial_hotspot(hotspot_id: str, payload: dict = None):
+    return {
+        "id": hotspot_id,
+        "status": payload.get("resolution_status", "investigating") if payload else "investigating",
+        "notes": payload.get("notes", "") if payload else ""
+    }
