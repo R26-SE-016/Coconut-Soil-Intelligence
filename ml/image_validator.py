@@ -4,6 +4,12 @@ import os
 import requests
 import cv2
 
+from dotenv import load_dotenv
+
+# Ensure .env is loaded regardless of current working directory
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(base_dir, ".env"))
+
 # =====================================================================
 # CONFIGURATION CONSTANTS
 # Engineering safeguards, not biological nutrient thresholds.
@@ -71,11 +77,13 @@ def validate_basic_leaf_input(image: np.ndarray, leaf_mask: np.ndarray, feats: d
     mean_r = feats.get('mean_r', 0)
     mean_g = feats.get('mean_g', 0)
     mean_b = feats.get('mean_b', 0)
+    green_ratio = feats.get('green_ratio', 0)
     
     # Excess Green Index (ExG)
     exg = 2 * mean_g - mean_r - mean_b
     
-    if exg < -20.0:
+    # Catch indoor scenes, wood, human skin, food plates where green is absent (< 1.5%) and Red dominates Green
+    if (exg < 0.0 and green_ratio < 0.02 and mean_r > 1.25 * mean_g) or exg < -15.0:
         return ValidationResult(
             False, 
             "invalid_input", 
