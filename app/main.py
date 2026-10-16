@@ -43,16 +43,28 @@ app.add_middleware(
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Initialize Firebase
+# Supports: (1) local firebase-credentials.json file, or (2) FIREBASE_CREDENTIALS_JSON env var (for Render)
 firebase_cred_path = os.path.join(base_dir, "firebase-credentials.json")
 db = None
 try:
+    cred = None
     if os.path.exists(firebase_cred_path):
+        # Local development: use credentials file
         cred = credentials.Certificate(firebase_cred_path)
+        print("[INFO] Firebase: Loading credentials from file.")
+    elif os.environ.get("FIREBASE_CREDENTIALS_JSON"):
+        # Render / Cloud deployment: use environment variable
+        import json
+        cred_dict = json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"])
+        cred = credentials.Certificate(cred_dict)
+        print("[INFO] Firebase: Loading credentials from environment variable.")
+    
+    if cred:
         firebase_admin.initialize_app(cred)
         db = firestore.client()
         print("[OK] Firebase Initialized Successfully.")
     else:
-        print("[WARN] firebase-credentials.json not found. Firebase features will fail.")
+        print("[WARN] Firebase credentials not found (no file or env var). Firebase features will fail.")
 except Exception as e:
     print(f"[ERROR] Firebase init failed: {e}")
 
