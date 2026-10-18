@@ -6,6 +6,10 @@ class ImagePredictionDetails(BaseModel):
     class_name: str = Field(..., alias="class")
     confidence: float
 
+    class Config:
+        allow_population_by_field_name = True
+        populate_by_name = True
+
 class ImageRecommendationAdvice(BaseModel):
     source: str
     assessment_type: str
@@ -38,13 +42,50 @@ class LocationResponse(BaseModel):
     raw_attributes: Optional[Dict[str, Any]] = Field(None, description="Raw attributes returned from NSDI GIS API")
 
 class SaveNutrientScanRequest(BaseModel):
+    id: Optional[str] = None
     user_id: str
+    user_email: Optional[str] = None
+    estate_name: Optional[str] = None
     palm_age: str
     palm_stage: str
     zone: str
     image_uri: Optional[str] = None
-    prediction: Optional[ImagePredictionDetails] = None
-    recommendation: Optional[ImageRecommendationAdvice] = None
+    image_preview: Optional[str] = None
+    prediction: Optional[Any] = None
+    recommendation: Optional[Any] = None
+    nutrient: Optional[str] = None
+    class_name: Optional[str] = None
+    confidence: Optional[float] = None
+    advice: Optional[str] = None
+    assessment_type: Optional[str] = None
+    visual_features: Optional[Dict[str, float]] = None
+    location: Optional[Dict[str, float]] = None
+    captured_at: Optional[str] = None
+
+class SaveLabCalculationRequest(BaseModel):
+    id: Optional[str] = None
+    user_id: str
+    user_email: Optional[str] = None
+    tree_no: Optional[str] = None
+    estate_name: Optional[str] = None
+    nitrogen: float
+    phosphorus: float
+    potassium: float
+    magnesium: Optional[float] = None
+    palm_age: float
+    zone: str
+    urea: int
+    erp_or_tsp: int
+    mop: int
+    dolomite: int
+    phosphate_type: str
+    evalN: str
+    evalP: str
+    evalK: str
+    evalMg: str
+    health_status: str
+    agronomic_advice: List[str] = []
+    captured_at: Optional[str] = None
 
 class LabRecommendationRequest(BaseModel):
     nitrogen: float

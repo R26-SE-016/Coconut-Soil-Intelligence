@@ -23,7 +23,11 @@ def get_image_based_recommendation(predicted_nutrient: str, confidence: float, t
                 "class": "Healthy",
                 "confidence": round(confidence, 4)
             },
-            "recommendation": None
+            "recommendation": {
+                "source": "Coconut Research Institute (CRI) Diagnostic Protocol",
+                "assessment_type": "preliminary_visual_assessment",
+                "advice": "Palm foliage appears healthy and balanced with no acute visual deficiency symptoms. Maintain regular CRI circular trench fertilization and seasonal moisture conservation."
+            }
         }
         
     if predicted_nutrient == "Nitrogen":
