@@ -191,21 +191,31 @@ def apply_post_prediction_safety_rule(feats: dict, predicted_class: str, model_c
     Post-Prediction Safety Rule (Pest/Disease Confounding Check)
     
     PURPOSE:
-    A conservative uncertainty safeguard. It does NOT classify disease.
-    It simply means that the visual evidence is not sufficiently reliable for a confident nutrient-only diagnosis.
+    Differentiates foliar nutrient deficiencies from fungal/pest diseases.
+    Nutrient deficiencies (N, Mg, B) exhibit systemic, uniform or V-shaped gradients across leaflets.
+    In contrast, discrete circular/elliptical necrotic spots with halos indicate fungal diseases
+    (e.g., Grey Leaf Spot / Pestalotiopsis or Leaf Blight), which belong to the Pathology module.
     """
     spot_count = feats.get('spot_count', 0)
     discolored_ratio = feats.get('discolored_ratio', 0.0)
+    largest_spot_area = feats.get('largest_spot_area', 0)
     
+    # 1. Discrete Spot Disease Detection (Pathology redirection)
+    # If the leaf exhibits multiple discrete necrotic spots typical of leaf blight or fungal leaf spot:
+    if spot_count >= 15 or (spot_count >= 8 and largest_spot_area > 120):
+        return ValidationResult(
+            False,
+            "uncertain",
+            "Observed symptoms exhibit discrete necrotic spots typical of fungal or pest diseases (such as Leaf Blight or Grey Leaf Spot). Please use the Pathology Scanner for disease diagnosis."
+        )
+
+    # 2. General confidence & contradiction check
     if (spot_count > SPOT_COUNT_THRESHOLD or discolored_ratio > DISCOLORATION_THRESHOLD):
-        # If the model predicts "Healthy" but there are significant spots/discoloration, 
-        # it is a major contradiction (likely OOD image). 
-        # Otherwise, check the general confidence threshold.
         if predicted_class == 'Healthy' or model_confidence < POST_VALIDATION_CONFIDENCE_THRESHOLD:
             return ValidationResult(
                 False, 
                 "uncertain", 
-                "Unable to confidently determine whether the observed symptoms are nutrient-related. Laboratory or pest/disease analysis is recommended."
+                "Unable to confidently determine whether the observed symptoms are nutrient-related. Laboratory foliar test or pest/disease analysis is recommended."
             )
             
     return ValidationResult(True, "success")
